@@ -1,0 +1,36 @@
+{
+  "name": "kitchen-ledger",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Restaurant SOP, inventory, variance and chef-profitability platform",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b --noCheck && vite build",
+    "preview": "vite preview",
+    "server": "node scripts/build-server-core.mjs && node server/index.mjs",
+    "deploy:pages": "node scripts/deploy-pages.mjs",
+    "typecheck": "tsc --noEmit",
+    "build:server-core": "node scripts/build-server-core.mjs",
+    "seed:build": "node tools/build-seed.mjs && node tools/build-seed2.mjs",
+    "test:seed": "esbuild tools/test-seed.ts --bundle --platform=node --format=esm --loader:.json=json --outfile=tools/.cache/seed.mjs --log-level=error && node tools/.cache/seed.mjs",
+    "test:bill": "node tools/make-invoice-pdf.mjs && node tools/make-invoice-2.mjs && esbuild tools/test-bill.ts --bundle --platform=node --format=esm --loader:.json=json --external:pdfjs-dist/legacy/build/pdf.mjs --outfile=tools/.cache/bill.mjs --log-level=error && node tools/.cache/bill.mjs"
+  },
+  "dependencies": {
+    "idb": "^8.0.0",
+    "pdfjs-dist": "^4.7.76",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "recharts": "^2.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.9",
+    "esbuild": "^0.24.0"
+  }
+}
