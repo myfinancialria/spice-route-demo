@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useLedger } from '../data/store'
 import { ROLE_LABEL, findNavItem, visibleNav } from './nav'
@@ -13,24 +14,64 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [showUser, setShowUser] = useState(false)
   const [theme, setTheme] = useLocalState<'dark' | 'light'>('kl.theme', 'dark')
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null)
   const navRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const triggers = useRef<Record<string, HTMLButtonElement | null>>({})
 
   const groups = visibleNav(user?.role)
+  const openGroupData = groups.find((g) => g.id === open)
+
+  const MENU_WIDTH = 268
+
+  /**
+   * The dropdown is rendered into document.body rather than inside the bar.
+   * The bar scrolls horizontally on narrower screens, and any scroll container
+   * clips on both axes — which silently swallowed every menu.
+   */
+  const openGroup = useCallback((id: string | null) => {
+    if (!id) { setOpen(null); setMenuPos(null); return }
+    const button = triggers.current[id]
+    if (!button) return
+    const r = button.getBoundingClientRect()
+    setMenuPos({
+      top: r.bottom + 6,
+      // Keep it on screen when the trigger sits near the right edge.
+      left: Math.max(8, Math.min(r.left, window.innerWidth - MENU_WIDTH - 8)),
+    })
+    setOpen(id)
+  }, [])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
 
-  useEffect(() => { setOpen(null); setMobileOpen(false) }, [location.pathname])
+  useEffect(() => { setOpen(null); setMenuPos(null); setMobileOpen(false) }, [location.pathname])
 
   useEffect(() => {
-    const onClick = (e: MouseEvent) => {
-      if (navRef.current && !navRef.current.contains(e.target as Node)) setOpen(null)
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      // The menu lives in a portal, so it is not inside navRef. Without this
+      // check it would unmount on mousedown and the click would never land.
+      if (navRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(null)
+      setMenuPos(null)
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(null) }
-    window.addEventListener('mousedown', onClick)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setOpen(null); setMenuPos(null) }
+    }
+    // A fixed-position menu would drift away from its trigger.
+    const onReflow = () => { setOpen(null); setMenuPos(null) }
+    window.addEventListener('mousedown', onPointerDown)
     window.addEventListener('keydown', onKey)
-    return () => { window.removeEventListener('mousedown', onClick); window.removeEventListener('keydown', onKey) }
+    window.addEventListener('resize', onReflow)
+    window.addEventListener('scroll', onReflow, true)
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onReflow)
+      window.removeEventListener('scroll', onReflow, true)
+    }
   }, [])
 
   const current = findNavItem(location.pathname)
@@ -58,33 +99,40 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <div key={g.id} className={`nav-group${open === g.id ? ' open' : ''}`}>
               <button
                 type="button"
+                ref={(el) => { triggers.current[g.id] = el }}
                 className={`nav-trigger${current?.group.id === g.id ? ' active' : ''}`}
                 aria-expanded={open === g.id}
-                onClick={() => setOpen(open === g.id ? null : g.id)}
-                onMouseEnter={() => open && setOpen(g.id)}
+                aria-haspopup="menu"
+                onClick={() => openGroup(open === g.id ? null : g.id)}
+                onMouseEnter={() => { if (open && open !== g.id) openGroup(g.id) }}
               >
                 <span>{g.icon}</span> {g.label} <span className="chev">▼</span>
               </button>
-              {open === g.id && (
-                <div className="nav-menu" role="menu">
-                  <div className="nav-menu-label">{g.label}</div>
-                  {g.items.map((item) => (
-                    <Link
-                      key={item.path} to={item.path} role="menuitem"
-                      className={`nav-item${location.pathname === item.path ? ' active' : ''}`}
-                    >
-                      <span className="ico">{item.icon}</span>
-                      <span className="nav-item-body">
-                        {item.label}
-                        {item.desc && <span className="sub">{item.desc}</span>}
-                      </span>
-                    </Link>
-                  ))}
-                </div>
-              )}
             </div>
           ))}
         </nav>
+
+        {openGroupData && menuPos && createPortal(
+          <div
+            className="nav-menu" role="menu" ref={menuRef}
+            style={{ top: menuPos.top, left: menuPos.left, width: MENU_WIDTH }}
+          >
+            <div className="nav-menu-label">{openGroupData.label}</div>
+            {openGroupData.items.map((item) => (
+              <Link
+                key={item.path} to={item.path} role="menuitem"
+                className={`nav-item${location.pathname === item.path ? ' active' : ''}`}
+              >
+                <span className="ico">{item.icon}</span>
+                <span className="nav-item-body">
+                  {item.label}
+                  {item.desc && <span className="sub">{item.desc}</span>}
+                </span>
+              </Link>
+            ))}
+          </div>,
+          document.body,
+        )}
 
         <button className="icon-btn mobile-only" onClick={() => setMobileOpen(true)} aria-label="Menu">☰</button>
 
