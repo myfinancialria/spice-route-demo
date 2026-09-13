@@ -41,9 +41,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <header className="topbar">
         <Link to="/" className="brand">
           <span className="brand-mark">🍲</span>
-          <span>
+          <span className="brand-lines">
             <span className="brand-text">Kitchen Ledger</span>
-            <span className="brand-sub" style={{ display: 'block' }}>Spice Route Kitchen</span>
+            <span className="brand-sub">Spice Route Kitchen</span>
           </span>
         </Link>
 
