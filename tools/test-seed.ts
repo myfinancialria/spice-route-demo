@@ -9,7 +9,8 @@ const t0 = Date.now()
 const s = generateSeed(today)
 console.log('generated in', Date.now() - t0, 'ms')
 console.log({
-  movements: s.movements.length, bills: s.bills.length, issues: s.issues.length,
+  movements: s.movements.length, purchaseOrders: s.purchaseOrders.length, receipts: s.receipts.length,
+  alerts: s.alerts.length, issues: s.issues.length,
   production: s.production.length, wastage: s.wastage.length, sales: s.sales.length,
   stocktakes: s.stocktakes.length, dishes: s.dishes.length, items: s.items.length,
 })
@@ -39,6 +40,16 @@ for (const t of kitchenTakes.slice(-6)) {
   const l = t.lines.find(x => x.itemId === 'itm_chk001')
   if (l) console.log(' ', t.date, 'system', Math.round(l.systemQtyBase), 'counted', Math.round(l.countedQtyBase), 'gap', Math.round(l.countedQtyBase - l.systemQtyBase))
 }
+console.log('\n-- PO status mix --', Object.entries(s.purchaseOrders.reduce((m: any, p) => (m[p.status] = (m[p.status] || 0) + 1, m), {})).map(([k, v]) => k + '=' + v).join(' '))
+const issues = s.receipts.flatMap(g => g.lines.filter(l => l.issue))
+console.log('-- receipt issues --', issues.length, 'lines of', s.receipts.reduce((n, g) => n + g.lines.length, 0), '|', Object.entries(issues.reduce((m: any, l) => (m[l.issue!] = (m[l.issue!] || 0) + 1, m), {})).map(([k, v]) => k + '=' + v).join(' '))
+console.log('-- open POs for today --', s.purchaseOrders.filter(p => p.status === 'SENT').map(p => p.poNo + ' ' + p.supplierId + ' ' + p.lines.length + ' lines').join(' | '))
+console.log('\n-- alerts by kind/status --')
+const byKind: any = {}
+for (const a of s.alerts) { byKind[a.kind] = byKind[a.kind] || { OPEN: 0, ACKNOWLEDGED: 0, RESOLVED: 0 }; byKind[a.kind][a.status]++ }
+console.table(byKind)
+console.log('-- top open alerts today --')
+for (const a of s.alerts.filter(x => x.status === 'OPEN' && x.date === today).slice(0, 8)) console.log(' ', a.severity.padEnd(8), 'INR', String(a.impact).padStart(7), a.kind.padEnd(14), a.title)
 const b = balances(s.movements)
 let neg = 0; for (const x of b.values()) if (x.qty < -0.5) neg++
 console.log('\nnegative balances:', neg, 'of', b.size)

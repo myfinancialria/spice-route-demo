@@ -95,6 +95,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
           >
             <span>📊</span> Dashboard
           </Link>
+          <Link
+            to="/alerts"
+            className={`nav-trigger${location.pathname === '/alerts' ? ' active' : ''}`}
+          >
+            <span>🔔</span> Alerts
+            {derived.openAlerts.length > 0 && (
+              <span className="badge badge-critical" style={{ marginLeft: 2 }}>{derived.openAlerts.length}</span>
+            )}
+          </Link>
           {groups.map((g) => (
             <div key={g.id} className={`nav-group${open === g.id ? ' open' : ''}`}>
               <button
@@ -167,6 +176,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </header>
             <div className="modal-body">
               <Link to="/" className="nav-item"><span className="ico">📊</span> Dashboard</Link>
+              <Link to="/alerts" className="nav-item"><span className="ico">🔔</span> Alerts {derived.openAlerts.length > 0 && <span className="badge badge-critical">{derived.openAlerts.length}</span>}</Link>
               {groups.map((g) => (
                 <div key={g.id} style={{ marginTop: 10 }}>
                   <div className="nav-menu-label">{g.icon} {g.label}</div>

@@ -51,7 +51,7 @@ function entryUnit(item: Item, typical: number): { label: string; factor: number
   return typical >= 1000 ? { label: big, factor: 1000 } : { label: item.baseUnit, factor: 1 }
 }
 
-function QuickTake() {
+export function QuickTake({ compact = false }: { compact?: boolean } = {}) {
   const { state, derived, actions, user } = useLedger()
   const { push } = useToast()
   const navigate = useNavigate()
@@ -175,7 +175,7 @@ function QuickTake() {
             <button className={`btn btn-sm${showAll ? ' btn-primary' : ''}`} onClick={() => setShowAll(!showAll)}>
               {showAll ? 'Showing everything' : 'Show all items'}
             </button>
-            <button className="btn" onClick={() => navigate('/store/issue')}>Full indent form</button>
+            {!compact && <button className="btn" onClick={() => navigate('/store/issue')}>Full indent form</button>}
           </>
         }
       />
@@ -478,7 +478,7 @@ function Production() {
 /* Kitchen stock                                                       */
 /* ================================================================== */
 
-function KitchenStock() {
+export function KitchenStock() {
   const { derived } = useLedger()
   const [search, setSearch] = useState('')
   const [drill, setDrill] = useState<ID | null>(null)

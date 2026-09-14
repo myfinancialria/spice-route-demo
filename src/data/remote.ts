@@ -6,7 +6,7 @@
  * runs the same command functions — so this only moves where the records live.
  */
 import type { Collections } from './db'
-import type { Item, Movement } from '../core/types'
+import type { Item, Movement, PurchaseOrder } from '../core/types'
 
 export const API_BASE: string | undefined = import.meta.env.VITE_API_BASE as string | undefined
 export const isRemote = !!API_BASE
@@ -27,6 +27,7 @@ export interface RemoteResult {
   movements: Movement[]
   itemPatches: Item[]
   warnings: string[]
+  poPatch?: PurchaseOrder
 }
 
 export const remote = {

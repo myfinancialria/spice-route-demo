@@ -15,26 +15,57 @@ first click, but every screen writes back, and the data lives in your own browse
 
 Every restaurant loses money in the gap between what the recipes say should have been
 used and what actually left the shelf. That gap is invisible day to day and only shows
-up when someone physically counts. This system closes the loop:
+up when someone physically counts. This system closes the loop, and gives each person
+in the chain one small job:
 
 ```
-  SOP ──► what a dish should cost and consume
-   │
-   ▼
-  Purchase bill ──► stock into the store, weighted-average cost updated
-   │
-   ▼
-  Issue ──► store to kitchen, recorded in two taps
-   │
-   ▼
+  Purchase manager ──► sends a PO to the vendor
+        │
+        ▼
+  Store manager ──► checks the delivery in: received, damaged, missing, why
+        │                accepted quantity → store stock; the rest → an alert
+        ▼
+  Chef ──► takes what the day needs (two taps)
+        │
+        ▼
   Sales ──► recipes explode and deplete kitchen stock
-   │
-   ▼
-  Physical count ──► expected vs actual = variance, priced and ranked
-   │
-   ▼
-  Reports ──► against last week, against average, and by chef
+        │
+        ▼
+  Chef ──► counts what is physically there at close (blind — inputs only)
+        │
+        ▼
+  Intelligence ──► count vs system vs sales → alerts, ranked by priority and ₹ impact
+        │
+        ▼
+  Manager ──► inbox + six-number dashboard → category → every row, by day or by item
 ```
+
+## Who sees what
+
+Sign in by tapping your name and entering a PIN. What you get depends on your role:
+
+| Role | What they see | Demo PIN |
+|---|---|---|
+| **Chef** | Three buttons: **Take**, **Count**, **Waste**. The count is blind — no system quantities, no gaps, no values. They type what is on the shelf and send it. | 3434 (Vinod) |
+| **Store manager** | **Receive** — orders waiting for delivery; tap one, enter received / damaged / missing per line with a reason. **Count** the store. | 4444 |
+| **Purchase manager** | **Order** — what is running low, grouped by vendor, one tap to raise the PO prefilled with suggested quantities. **Orders** — status of everything sent. | 6666 |
+| **Manager / Owner / Accounts** | Everything, plus the **Alerts** inbox and the dashboard. Managers can also open any staff screen to cover a shift. | 2222 |
+
+The staff apps are deliberately plain: large type, one task per screen, a single primary
+button, and nothing to configure. They are built for a phone in a kitchen.
+
+## Alerts
+
+The engine runs whenever a count or a delivery is posted, and compares:
+
+- the chef's count against what the recipes say should be left after the day's sales
+- what the store accepted against what was ordered
+- orders past their expected date, items about to run out, rates that jumped, negative balances
+
+Each alert carries a **severity** (how wrong) and a **rupee impact** (how much), and the
+inbox is sorted by both — because a 40% variance on cardamom and a 4% variance on chicken
+are not the same problem. Acknowledging or resolving an alert survives the next
+recalculation; live conditions (stock topped up, order received) close themselves.
 
 Nothing changes a stock balance directly. Bills, issues, prep batches, sales, wastage and
 counts all write rows to one append-only ledger, and every balance is the sum of them —
@@ -45,9 +76,9 @@ so any figure on any screen can be traced back to the document that caused it.
 | Area | Screens |
 |---|---|
 | **SOP & Menu** | Recipe SOPs (quantities, method, control points), Prep & sub-recipes, Menu dishes, Plate costing, Menu engineering |
-| **Purchases** | Upload bill (PDF), Manual entry for handwritten bills, Purchase register, Price watch, Suppliers |
-| **Store** | Goods receipt, Store stock, Issue to kitchen, Store stocktake |
-| **Kitchen** | Quick Take, Prep production, Kitchen stock, Wastage & staff meals, Kitchen stocktake |
+| **Purchases** | Purchase orders, Goods receipts (with short/refused), Upload bill (PDF), Manual entry, Purchase register, Price watch, Suppliers |
+| **Store** | Receive a delivery, Stock in, Store stock, Issue to kitchen, Store stocktake |
+| **Kitchen** | Quick Take, Blind count, Prep production, Kitchen stock, Wastage & staff meals, Kitchen stocktake |
 | **Sales** | Daily entry, POS import, Sales register, Dish performance |
 | **Day Close** | Five-step close, Variance review, Close history |
 | **Reports** | Food cost & P&L, Variance, Chef efficiency, Trends vs average, Item movement, Wastage, Stock valuation |
@@ -58,6 +89,12 @@ it is, what it has cost over time, which dishes consume it, and every movement i
 
 ### A few things worth looking at
 
+- **The dashboard** — six numbers. Tap one and it opens the breakdown by category; tap a
+  category and you get every row behind it, switchable between *by day* and *by item*,
+  exportable as CSV. Nothing else on the page.
+- **Receive a delivery** — the store manager's screen. Received is prefilled from the
+  order; type what actually came and what was refused, and the missing quantity, the
+  reason chips and the manager's alert all follow.
 - **Recipe SOPs** — a dish's cost recalculates as you type, including ingredients hidden
   inside a gravy. The panel tells you what the dish would need to sell at to hit a 33%
   food cost.
@@ -125,6 +162,7 @@ The seed masters are rebuilt with `npm run seed:build`, which regenerates
 ```
 src/core/          Pure domain logic — no I/O, no React
   types.ts         The whole model
+  alerts.ts        The alert engine: what to tell the manager, and in what order
   units.ts         Base-unit conversion, purchase units, display
   costing.ts       Recursive recipe explosion through prep items
   stock.ts         Ledger balances, weighted average cost, reorder
@@ -134,7 +172,7 @@ src/core/          Pure domain logic — no I/O, no React
   seed/            Deterministic four-month trading generator
 
 src/data/          Persistence and commands
-  commands.ts      The only code that writes to the ledger
+  commands.ts      The only code that writes to the ledger (receipts, issues, sales, counts…)
   db.ts            IndexedDB
   remote.ts        HTTP backend (optional)
   store.tsx        React state, derived indexes, actions
@@ -142,6 +180,9 @@ src/data/          Persistence and commands
 src/lib/
   billParse.ts     Invoice text → line items (no PDF dependency)
   pdf.ts           PDF → text lines, lazily loading pdf.js
+
+src/screens/roles/ The three single-role apps: ChefApp, StoreApp, PurchaseApp
+src/screens/Lock.tsx  Who is holding the device
 
 server/            Node + SQLite, sharing src/core and src/data/commands
 ```
@@ -166,8 +207,13 @@ are not counted twice.
 **Variance is measured against throughput**, not closing stock. Closing stock on a fast
 mover is near zero, which would make every rounding error look catastrophic.
 
-**Blind counting is the default.** The system quantity stays hidden until a count is typed.
-A count that can be copied will be copied, and a copied count makes the whole report worthless.
+**The chef's count is blind, full stop.** The chef's app never shows a system quantity, a
+gap or a value. A count that can be steered towards what the system expects is not a count,
+and the whole variance report rests on it being honest.
+
+**Only accepted stock enters the ledger.** A short or refused line on a delivery never
+touches stock; it becomes an alert with a rupee value and a mark against the vendor. Vendor
+"lost value" on the receipts screen is what to chase credit notes for.
 
 ## Data
 

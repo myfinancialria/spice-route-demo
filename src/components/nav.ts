@@ -16,7 +16,13 @@ export interface NavGroup {
   roles?: StaffRole[]
 }
 
-const ALL: StaffRole[] = ['OWNER', 'MANAGER', 'HEAD_CHEF', 'CHEF', 'STORE', 'ACCOUNTS']
+const ALL: StaffRole[] = ['OWNER', 'MANAGER', 'HEAD_CHEF', 'CHEF', 'STORE', 'PURCHASE', 'ACCOUNTS']
+
+/** Roles that get the full system rather than a single-task app. */
+export const ADMIN_ROLES: StaffRole[] = ['OWNER', 'MANAGER', 'ACCOUNTS']
+export function isAdminRole(role: StaffRole | undefined): boolean {
+  return !!role && ADMIN_ROLES.includes(role)
+}
 
 /**
  * Every screen sits under exactly one category, and each category opens as a
@@ -38,6 +44,8 @@ export const NAV: NavGroup[] = [
     id: 'purchase', label: 'Purchases', icon: '🧾',
     roles: ['OWNER', 'MANAGER', 'STORE', 'ACCOUNTS'],
     items: [
+      { path: '/purchase/orders', label: 'Purchase Orders', icon: '📝', desc: 'What has been ordered and what came' },
+      { path: '/purchase/receipts', label: 'Goods Receipts', icon: '📥', desc: 'Every delivery, with what was short or refused' },
       { path: '/purchase/upload', label: 'Upload Bill (PDF)', icon: '📄', desc: 'Read a supplier invoice automatically' },
       { path: '/purchase/manual', label: 'Manual Bill Entry', icon: '✍️', desc: 'For handwritten kaccha bills' },
       { path: '/purchase/register', label: 'Purchase Register', icon: '📚', desc: 'Every bill, searchable' },
@@ -49,7 +57,8 @@ export const NAV: NavGroup[] = [
     id: 'store', label: 'Store', icon: '📦',
     roles: ['OWNER', 'MANAGER', 'STORE', 'HEAD_CHEF'],
     items: [
-      { path: '/store/receipts', label: 'Goods Receipt', icon: '📥', desc: 'Add received stock to opening balance' },
+      { path: '/receive', label: 'Receive a Delivery', icon: '🚚', desc: 'Check an order in — the store manager’s screen' },
+      { path: '/store/receipts', label: 'Stock In', icon: '📥', desc: 'Everything that has entered the building' },
       { path: '/store/stock', label: 'Store Stock', icon: '🏬', desc: 'On hand, value, cover' },
       { path: '/store/issue', label: 'Issue to Kitchen', icon: '➡️', desc: 'Full indent with approvals' },
       { path: '/store/stocktake', label: 'Store Stocktake', icon: '🔢', desc: 'Physical count sheet' },
@@ -58,7 +67,8 @@ export const NAV: NavGroup[] = [
   {
     id: 'kitchen', label: 'Kitchen', icon: '👨‍🍳',
     items: [
-      { path: '/kitchen/quick-take', label: 'Quick Take', icon: '⚡', desc: 'Tap, type, done — built for service' },
+      { path: '/chef/take', label: 'Quick Take', icon: '⚡', desc: 'Tap, type, done — the chef’s screen' },
+      { path: '/chef/count', label: 'Blind Count', icon: '🙈', desc: 'The chef’s end-of-day count, inputs only' },
       { path: '/kitchen/production', label: 'Prep Production', icon: '🍲', desc: 'Batch gravies and pastes' },
       { path: '/kitchen/stock', label: 'Kitchen Stock', icon: '🧊', desc: 'What is on the line right now' },
       { path: '/kitchen/wastage', label: 'Wastage & Staff Meals', icon: '🗑', desc: 'Record it before it hides in variance' },
@@ -129,7 +139,7 @@ export function findNavItem(path: string): { group: NavGroup; item: NavItem } | 
 
 export const ROLE_LABEL: Record<StaffRole, string> = {
   OWNER: 'Owner', MANAGER: 'Manager', HEAD_CHEF: 'Head Chef',
-  CHEF: 'Chef', STORE: 'Store Keeper', ACCOUNTS: 'Accounts',
+  CHEF: 'Chef', STORE: 'Store Manager', PURCHASE: 'Purchase Manager', ACCOUNTS: 'Accounts',
 }
 
 export { ALL as ALL_ROLES }

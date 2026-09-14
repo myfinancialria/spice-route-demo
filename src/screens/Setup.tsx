@@ -600,7 +600,8 @@ function DataAndBackup() {
 
   const counts = [
     ['Items', state.items.length], ['Dishes', state.dishes.length], ['Recipes', state.recipes.length],
-    ['Purchase bills', state.bills.length], ['Store issues', state.issues.length],
+    ['Purchase orders', state.purchaseOrders.length], ['Goods receipts', state.receipts.length],
+    ['Alerts', state.alerts.length], ['Store issues', state.issues.length],
     ['Prep batches', state.production.length], ['Wastage entries', state.wastage.length],
     ['Sales days', state.sales.length], ['Stocktakes', state.stocktakes.length],
     ['Ledger movements', state.movements.length],

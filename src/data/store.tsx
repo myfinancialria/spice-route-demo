@@ -3,10 +3,11 @@ import {
 } from 'react'
 import type { ReactNode } from 'react'
 import type {
-  Category, DayClose, Dish, ID, Issue, Item, Movement, ProductionRun,
-  PurchaseBill, Recipe, SalesDay, Section, Staff, StockLocation, Stocktake,
-  Supplier, Wastage,
+  Alert, AlertStatus, Category, DayClose, Dish, GoodsReceipt, ID, Issue, Item,
+  Movement, ProductionRun, PurchaseBill, PurchaseOrder, Recipe, SalesDay,
+  Section, Staff, StockLocation, Stocktake, Supplier, Wastage,
 } from '../core/types'
+import { computeAlerts, mergeAlerts } from '../core/alerts'
 import { buildContext, type CostingContext } from '../core/costing'
 import { balances } from '../core/stock'
 import { generateSeed } from '../core/seed/generate'
@@ -16,8 +17,8 @@ import {
   emptyCollections, loadAll, putRecords, writeAll,
 } from './db'
 import {
-  type PostContext, type PostResult, postBill, postIssue, postProduction,
-  postSales, postStocktake, postWastage, reverseDocument,
+  type PostContext, type PostResult, postBill, postGoodsReceipt, postIssue,
+  postProduction, postSales, postStocktake, postWastage, reverseDocument,
 } from './commands'
 import { API_BASE, isRemote, remote } from './remote'
 
@@ -37,6 +38,9 @@ interface Derived {
   onHand: Map<ID, number>
   stockValue: number
   today: string
+  /** Open alerts, highest priority first. */
+  openAlerts: Alert[]
+  /** Is the signed-in person one of the roles that runs the whole system? */
 }
 
 interface Actions {
@@ -49,6 +53,11 @@ interface Actions {
   postWastage: (w: Wastage) => Promise<PostResult>
   postSales: (day: SalesDay) => Promise<PostResult>
   postStocktake: (take: Stocktake) => Promise<PostResult>
+  postGoodsReceipt: (grn: GoodsReceipt) => Promise<PostResult>
+  savePurchaseOrder: (po: PurchaseOrder) => Promise<void>
+  /** Re-run the alert engine for a date and persist what changed. */
+  refreshAlerts: (date?: string) => Promise<Alert[]>
+  setAlertStatus: (id: ID, status: AlertStatus, note?: string) => Promise<void>
   voidDocument: (refType: Movement['refType'], refId: string) => Promise<void>
   closeDay: (date: string, notes?: string) => Promise<void>
   resetDemo: () => Promise<void>
@@ -68,6 +77,8 @@ interface Ctx {
 }
 
 const LedgerContext = createContext<Ctx | null>(null)
+
+const sev = (s: Alert['severity']) => (s === 'CRITICAL' ? 3 : s === 'HIGH' ? 2 : 1)
 
 const USER_KEY = 'kl.user'
 
@@ -121,9 +132,10 @@ export function LedgerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!ready || user) return
+    // Remember who was here last; otherwise the lock screen asks.
     const saved = localStorage.getItem(USER_KEY)
-    const found = saved ? state.staff.find((s) => s.id === saved) : null
-    setUserState(found ?? state.staff.find((s) => s.role === 'MANAGER') ?? state.staff[0] ?? null)
+    const found = saved ? state.staff.find((s) => s.id === saved && s.active) : null
+    if (found) setUserState(found)
   }, [ready, state.staff, user])
 
   const setUser = useCallback((s: Staff | null) => {
@@ -148,7 +160,11 @@ export function LedgerProvider({ children }: { children: ReactNode }) {
     for (const r of state.recipes) {
       if (r.active) recipeIndex.set(`${r.ownerType}:${r.ownerId}`, r)
     }
+    const openAlerts = [...state.alerts]
+      .filter((a) => a.status === 'OPEN')
+      .sort((a, b) => sev(b.severity) * 1e6 + b.impact - (sev(a.severity) * 1e6 + a.impact))
     return {
+      openAlerts,
       ctx: buildContext(state.items, state.recipes),
       itemById,
       dishById: new Map(state.dishes.map((d) => [d.id, d])),
@@ -179,52 +195,57 @@ export function LedgerProvider({ children }: { children: ReactNode }) {
 
   /** Merge a command's output into memory, and persist it when running locally. */
   const applyResult = useCallback(async (result: PostResult, alreadyPersisted = false) => {
-    setState((prev) => ({
-      ...prev,
-      movements: result.movements.length ? [...prev.movements, ...result.movements] : prev.movements,
+    // Update the ref synchronously too, so a follow-up action in the same
+    // tick (raising alerts after a count) sees the movements it just posted.
+    const next: LedgerState = {
+      ...stateRef.current,
+      movements: result.movements.length ? [...stateRef.current.movements, ...result.movements] : stateRef.current.movements,
       items: result.itemPatches.length
-        ? prev.items.map((i) => result.itemPatches.find((p) => p.id === i.id) ?? i)
-        : prev.items,
-    }))
+        ? stateRef.current.items.map((i) => result.itemPatches.find((p) => p.id === i.id) ?? i)
+        : stateRef.current.items,
+    }
+    stateRef.current = next
+    setState(next)
     if (alreadyPersisted || isRemote) return
     await putRecords('movements', result.movements)
     await putRecords('items', result.itemPatches)
   }, [])
 
   const save = useCallback(async <T extends { id: string }>(collection: CollectionName, record: T) => {
-    setState((prev) => {
-      const list = (prev as any)[collection] as T[]
-      const idx = list.findIndex((r) => r.id === record.id)
-      const next = idx >= 0
-        ? list.map((r) => (r.id === record.id ? record : r))
-        : [...list, record]
-      return { ...prev, [collection]: next }
-    })
+    const list = (stateRef.current as any)[collection] as T[]
+    const idx = list.findIndex((r) => r.id === record.id)
+    const nextList = idx >= 0 ? list.map((r) => (r.id === record.id ? record : r)) : [...list, record]
+    const next = { ...stateRef.current, [collection]: nextList } as LedgerState
+    stateRef.current = next
+    setState(next)
     if (isRemote) await remote.put(collection, [record])
     else await putRecords(collection, [record])
   }, [])
 
   const saveMany = useCallback(async <T extends { id: string }>(collection: CollectionName, records: T[]) => {
     if (!records.length) return
-    setState((prev) => {
-      const list = (prev as any)[collection] as T[]
-      const map = new Map(list.map((r) => [r.id, r]))
-      for (const r of records) map.set(r.id, r)
-      return { ...prev, [collection]: [...map.values()] }
-    })
+    const list = (stateRef.current as any)[collection] as T[]
+    const map = new Map(list.map((r) => [r.id, r]))
+    for (const r of records) map.set(r.id, r)
+    const next = { ...stateRef.current, [collection]: [...map.values()] } as LedgerState
+    stateRef.current = next
+    setState(next)
     if (isRemote) await remote.put(collection, records)
     else await putRecords(collection, records)
   }, [])
 
   const remove = useCallback(async (collection: CollectionName, id: string) => {
-    setState((prev) => ({
-      ...prev,
-      [collection]: ((prev as any)[collection] as { id: string }[]).filter((r) => r.id !== id),
-    }))
+    const next = {
+      ...stateRef.current,
+      [collection]: ((stateRef.current as any)[collection] as { id: string }[]).filter((r) => r.id !== id),
+    } as LedgerState
+    stateRef.current = next
+    setState(next)
     if (isRemote) await remote.remove(collection, id)
     else await deleteRecord(collection, id)
   }, [])
 
+  const actionsRef = useRef<Actions | null>(null)
   const actions = useMemo<Actions>(() => ({
     save,
     saveMany,
@@ -318,12 +339,62 @@ export function LedgerProvider({ children }: { children: ReactNode }) {
           stocktakes: upsertInto(prev.stocktakes, take),
         }))
         await applyResult(result, true)
+        await actionsRef.current?.refreshAlerts(take.date)
         return result
       }
       const result = postStocktake(postContext(), take)
       await save('stocktakes', take)
       await applyResult(result)
+      // The count is what the manager is waiting for — raise the alerts now.
+      await actionsRef.current?.refreshAlerts(take.date)
       return result
+    },
+    async postGoodsReceipt(grn) {
+      const po = grn.poId ? stateRef.current.purchaseOrders.find((p) => p.id === grn.poId) : undefined
+      if (isRemote) {
+        const result = await remote.command('receipt', grn)
+        setState((prev) => ({
+          ...prev,
+          receipts: upsertInto(prev.receipts, grn),
+          purchaseOrders: result.poPatch ? upsertInto(prev.purchaseOrders, result.poPatch) : prev.purchaseOrders,
+        }))
+        await applyResult(result, true)
+        await actionsRef.current?.refreshAlerts(grn.date)
+        return result
+      }
+      const result = postGoodsReceipt(postContext(), grn, po)
+      await save('receipts', grn)
+      if (result.poPatch) await save('purchaseOrders', result.poPatch)
+      await applyResult(result)
+      await actionsRef.current?.refreshAlerts(grn.date)
+      return result
+    },
+    async savePurchaseOrder(po) {
+      await save('purchaseOrders', po)
+    },
+    async refreshAlerts(date) {
+      const st = stateRef.current
+      const d = date ?? iso(new Date())
+      const fresh = computeAlerts({
+        date: d, items: st.items, categories: st.categories, dishes: st.dishes,
+        recipes: st.recipes, suppliers: st.suppliers, movements: st.movements,
+        stocktakes: st.stocktakes, receipts: st.receipts, purchaseOrders: st.purchaseOrders,
+        sales: st.sales,
+      })
+      const merged = mergeAlerts(st.alerts, fresh, d)
+      // Only write what actually changed; the inbox can hold a few hundred rows.
+      const before = new Map(st.alerts.map((a) => [a.id, JSON.stringify(a)]))
+      const changed = merged.filter((a) => before.get(a.id) !== JSON.stringify(a))
+      if (changed.length) await saveMany('alerts', changed)
+      return merged.filter((a) => a.status === 'OPEN')
+    },
+    async setAlertStatus(id, status, note) {
+      const alert = stateRef.current.alerts.find((a) => a.id === id)
+      if (!alert) return
+      await save('alerts', {
+        ...alert, status, note: note ?? alert.note,
+        actedBy: user?.id ?? null, actedAt: new Date().toISOString(),
+      })
     },
     async voidDocument(refType, refId) {
       if (isRemote) {
@@ -375,6 +446,8 @@ export function LedgerProvider({ children }: { children: ReactNode }) {
     },
   }), [applyResult, postContext, save, saveMany, remove, user])
 
+  actionsRef.current = actions
+
   const value = useMemo<Ctx>(
     () => ({ state, derived, actions, ready, status, user, setUser }),
     [state, derived, actions, ready, status, user, setUser],
@@ -395,4 +468,4 @@ export function useLedger(): Ctx {
   return ctx
 }
 
-export type { Category, Dish, Item, Movement, Recipe, SalesDay, Staff, Stocktake, Supplier, Wastage }
+export type { Alert, Category, Dish, GoodsReceipt, Item, Movement, PurchaseOrder, Recipe, SalesDay, Staff, Stocktake, Supplier, Wastage }

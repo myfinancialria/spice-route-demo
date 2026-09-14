@@ -11,10 +11,12 @@
  * at the weekly physical count.
  */
 import type {
-  Category, DayClose, Dish, ID, Issue, Item, Movement, ProductionRun,
-  PurchaseBill, Recipe, SalesDay, SalesLine, Section, Staff, StockLocation,
-  Stocktake, Supplier, Wastage, WastageReason,
+  Alert, Category, DayClose, Dish, GoodsReceipt, GRNLine, ID, Issue, Item,
+  Movement, ProductionRun, PurchaseBill, PurchaseOrder, Recipe, ReceiptIssue,
+  SalesDay, SalesLine, Section, Staff, StockLocation, Stocktake, Supplier,
+  Wastage, WastageReason,
 } from '../types'
+import { computeAlerts, mergeAlerts } from '../alerts'
 import { buildContext, costRecipe, prepUnitCost, recipeKey, theoreticalConsumption } from '../costing'
 import { addDays, diffDays, dow, rangeDays } from '../dates'
 import { newAvgCost } from '../stock'
@@ -31,6 +33,9 @@ export interface SeedData {
   dishes: Dish[]
   recipes: Recipe[]
   bills: PurchaseBill[]
+  purchaseOrders: PurchaseOrder[]
+  receipts: GoodsReceipt[]
+  alerts: Alert[]
   issues: Issue[]
   production: ProductionRun[]
   wastage: Wastage[]
@@ -132,6 +137,8 @@ export function generateSeed(today: string, months = 4): SeedData {
 
   const movements: Movement[] = []
   const bills: PurchaseBill[] = []
+  const purchaseOrders: PurchaseOrder[] = []
+  const receipts: GoodsReceipt[] = []
   const issues: Issue[] = []
   const production: ProductionRun[] = []
   const wastage: Wastage[] = []
@@ -170,6 +177,7 @@ export function generateSeed(today: string, months = 4): SeedData {
   }
   const storeKeeper = staff.find((s) => s.role === 'STORE')!
   const manager = staff.find((s) => s.role === 'MANAGER')!
+  const buyer = staff.find((s) => s.role === 'PURCHASE') ?? manager
 
   /* ---------------- opening balances ---------------- */
   const openRnd = mulberry32(hash('opening'))
@@ -208,7 +216,8 @@ export function generateSeed(today: string, months = 4): SeedData {
    */
   const leakSinceCount = new Map<ID, number>()
 
-  let billNo = 1000
+  let poNo = 3000
+  let grnNo = 5000
   let issueNo = 1
   let prodNo = 1
   let wasteNo = 1
@@ -257,7 +266,7 @@ export function generateSeed(today: string, months = 4): SeedData {
       const pattern = supplierDays[supplier.id]
       if (!pattern || !pattern(dayIndex)) continue
       const supplyItems = items.filter((i) => i.defaultSupplierId === supplier.id && !i.isPrep)
-      const lines: PurchaseBill['lines'] = []
+      const poLines: PurchaseOrder['lines'] = []
       for (const item of supplyItems) {
         const onHand = getBal(item.id, item.defaultLocationId) + getBal(item.id, 'loc_kitchen')
         const need = forwardNeed.get(item.id) ?? 0
@@ -267,30 +276,75 @@ export function generateSeed(today: string, months = 4): SeedData {
         const packs = Math.max(1, Math.ceil(gapBase / item.purchaseConversion))
         const baseRate = basePurchaseRate.get(item.id) ?? item.avgCost * item.purchaseConversion
         const rate = round(baseRate * priceFactor(item.sku, dayIndex, totalDays, priceRnd), 2)
-        lines.push({
-          id: `bl_${billNo}_${lines.length}`, itemId: item.id, qty: packs,
+        poLines.push({
+          id: `pol_${poNo + 1}_${poLines.length}`, itemId: item.id, qty: packs,
           unit: item.purchaseUnit, rate: rate > 0 ? rate : round(item.avgCost * item.purchaseConversion, 2),
-          discount: 0, taxPct: item.gstPct,
-          batchNo: item.trackBatches ? `${item.sku}-${date.replace(/-/g, '')}` : undefined,
-          expiryDate: item.shelfLifeDays ? addDays(date, item.shelfLifeDays) : undefined,
+          acceptedBase: 0,
         })
       }
-      if (!lines.length) continue
-      billNo++
-      const bill: PurchaseBill = {
-        id: `bill_${billNo}`, billNo: `${supplier.code}/${billNo}`, supplierId: supplier.id,
-        billDate: date, receivedAt: `${date}T08:30:00.000Z`,
-        locationId: supplyItems[0]?.defaultLocationId ?? 'loc_store',
-        lines, otherCharges: 0, roundOff: 0, status: 'POSTED',
-        entryMode: dayIndex % 5 === 0 ? 'MANUAL' : 'PDF',
-        attachmentName: dayIndex % 5 === 0 ? undefined : `${supplier.name.split(' ')[0]}-${billNo}.pdf`,
-        enteredBy: storeKeeper.id, createdAt: `${date}T08:35:00.000Z`,
-      }
-      bills.push(bill)
+      if (!poLines.length) continue
 
-      for (const line of bill.lines) {
+      // The purchase manager raised this the evening before delivery.
+      poNo++
+      const orderedOn = addDays(date, -Math.max(1, supplier.leadTimeDays))
+      const po: PurchaseOrder = {
+        id: `po_${poNo}`, poNo: `PO-${poNo}`, supplierId: supplier.id,
+        date: orderedOn, expectedDate: date, lines: poLines, status: 'SENT',
+        createdBy: buyer.id, sentAt: `${orderedOn}T18:10:00.000Z`,
+        createdAt: `${orderedOn}T18:00:00.000Z`,
+      }
+
+      // The store manager checks the delivery. Most lines are fine; some are
+      // short, a few are refused — the vendor's scores decide how often.
+      const shortChance = (100 - supplier.deliveryScore) / 100 * 0.6
+      const damageChance = (100 - supplier.qualityScore) / 100 * 0.5
+      grnNo++
+      const grnLines: GRNLine[] = poLines.map((pl, i) => {
+        const item = itemById.get(pl.itemId)!
+        let received = pl.qty
+        let damaged = 0
+        let issue: ReceiptIssue | undefined
+        const roll = rnd()
+        if (roll < shortChance) {
+          received = Math.max(0, round(pl.qty * (0.6 + rnd() * 0.3), 2))
+          issue = rnd() < 0.8 ? 'SHORT_SUPPLIED' : 'WRONG_ITEM'
+        } else if (roll < shortChance + damageChance) {
+          damaged = round(pl.qty * (0.05 + rnd() * 0.2), 2)
+          issue = item.shelfLifeDays && item.shelfLifeDays <= 3 && rnd() < 0.5 ? 'QUALITY_REJECTED' : 'DAMAGED_IN_TRANSIT'
+        }
+        return {
+          id: `grl_${grnNo}_${i}`, itemId: pl.itemId, orderedQty: pl.qty,
+          receivedQty: received, damagedQty: damaged, unit: pl.unit, rate: pl.rate,
+          taxPct: item.gstPct, issue,
+          batchNo: item.trackBatches ? `${item.sku}-${date.replace(/-/g, '')}` : undefined,
+          expiryDate: item.shelfLifeDays ? addDays(date, item.shelfLifeDays) : undefined,
+        }
+      })
+      const grn: GoodsReceipt = {
+        id: `grn_${grnNo}`, grnNo: `GRN-${grnNo}`, poId: po.id, supplierId: supplier.id,
+        date, locationId: supplyItems[0]?.defaultLocationId ?? 'loc_store',
+        lines: grnLines, invoiceNo: `${supplier.code}/${grnNo}`,
+        attachmentName: dayIndex % 5 === 0 ? undefined : `${supplier.name.split(' ')[0]}-${grnNo}.pdf`,
+        entryMode: 'PO', status: 'POSTED', receivedBy: storeKeeper.id,
+        createdAt: `${date}T08:35:00.000Z`,
+      }
+      // Today's deliveries are still on their way — leave the POs open so the
+      // store manager has something to receive. Yesterday's seafood never
+      // turned up at all, so the manager has a genuinely late order to chase.
+      if (isToday || (dayIndex === totalDays - 2 && supplier.id === 'sup_5')) {
+        purchaseOrders.push(po)
+        continue
+      }
+      receipts.push(grn)
+
+      let complete = true
+      for (const [i, line] of grn.lines.entries()) {
         const item = itemById.get(line.itemId)!
-        const qtyBase = line.qty * item.purchaseConversion
+        const accepted = Math.max(line.receivedQty - line.damagedQty, 0)
+        const qtyBase = accepted * item.purchaseConversion
+        po.lines[i].acceptedBase = round(qtyBase, 4)
+        if (qtyBase < line.orderedQty * item.purchaseConversion * 0.95) complete = false
+        if (qtyBase <= 0) continue
         const rateBase = line.rate / item.purchaseConversion
         const loc = item.defaultLocationId
         item.avgCost = newAvgCost(getBal(item.id, loc), item.avgCost, qtyBase, rateBase)
@@ -298,9 +352,14 @@ export function generateSeed(today: string, months = 4): SeedData {
         post({
           date, ts: `${date}T08:40:00.000Z`, itemId: item.id, locationId: loc,
           qty: qtyBase, type: 'RECEIPT', rate: round(rateBase, 6),
-          refType: 'BILL', refId: bill.id, staffId: storeKeeper.id, batchNo: line.batchNo,
+          refType: 'GRN', refId: grn.id, staffId: storeKeeper.id, batchNo: line.batchNo,
         })
       }
+      // A short delivery is closed on receipt: the vendor does not send the
+      // rest, the shortfall is chased as a credit note, and the order is done.
+      void complete
+      po.status = 'RECEIVED'
+      purchaseOrders.push(po)
     }
 
     /* --- 3. prep production --- */
@@ -538,9 +597,35 @@ export function generateSeed(today: string, months = 4): SeedData {
     })
   }
 
+  /* ---------------- alerts for the last week ---------------- */
+  // The manager has been through most of them; the newest are still open.
+  let alerts: Alert[] = []
+  for (let back = 7; back >= 0; back--) {
+    const d = addDays(today, -back)
+    const fresh = computeAlerts({
+      date: d, items, categories, dishes, recipes, suppliers, movements,
+      stocktakes, receipts, purchaseOrders, sales,
+    })
+    alerts = mergeAlerts(alerts, fresh, d)
+    if (back >= 2) {
+      const r = mulberry32(hash(`ack:${d}`))
+      for (const a of alerts) {
+        if (a.date !== d || a.status !== 'OPEN') continue
+        const roll = r()
+        if (roll < 0.55) {
+          a.status = 'RESOLVED'; a.actedBy = manager.id; a.actedAt = `${addDays(d, 1)}T10:30:00.000Z`
+          a.note = a.kind === 'VARIANCE' ? 'Spoke to the section; portion scoop replaced' : a.kind === 'RECEIPT_ISSUE' ? 'Credit note requested' : undefined
+        } else if (roll < 0.8) {
+          a.status = 'ACKNOWLEDGED'; a.actedBy = manager.id; a.actedAt = `${addDays(d, 1)}T09:15:00.000Z`
+        }
+      }
+    }
+  }
+
   return {
     categories, sections, locations, staff, suppliers, items, dishes, recipes,
-    bills, issues, production, wastage, sales, stocktakes, dayCloses, movements,
+    bills, purchaseOrders, receipts, alerts, issues, production, wastage, sales,
+    stocktakes, dayCloses, movements,
   }
 }
 

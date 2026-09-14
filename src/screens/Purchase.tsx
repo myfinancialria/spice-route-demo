@@ -11,11 +11,14 @@ import { priceImpact } from '../core/costing'
 import { round, toBase } from '../core/units'
 import { loadAliases, parseBill, rememberAlias, type ParsedBill } from '../lib/pdf'
 import { downloadText, money, moneyShort, num, pct, qty as fmtQty, signedPct, toCsv } from '../lib/format'
-import type { ID, PurchaseBill, PurchaseBillLine, PurchaseUnit, Supplier } from '../core/types'
+import type { GRNLine, GoodsReceipt, ID, PurchaseBillLine, PurchaseUnit, Supplier } from '../core/types'
+import { PurchaseOrders, GoodsReceipts } from './Procurement'
 
 export default function Purchase() {
   return (
     <Routes>
+      <Route path="orders" element={<PurchaseOrders />} />
+      <Route path="receipts" element={<GoodsReceipts />} />
       <Route path="upload" element={<BillEntry mode="PDF" />} />
       <Route path="manual" element={<BillEntry mode="MANUAL" />} />
       <Route path="register" element={<Register />} />
@@ -145,15 +148,21 @@ function BillEntry({ mode }: { mode: 'PDF' | 'MANUAL' }) {
   const ready = lines.length > 0 && lines.every((l) => l.itemId && l.qty > 0 && l.rate >= 0) && !!supplierId && !!billNo
 
   const post = async () => {
-    const bill: PurchaseBill = {
-      id: uid('bill'), billNo, supplierId, billDate,
-      receivedAt: new Date().toISOString(), locationId,
-      lines: lines.map(({ raw, confidence, matched, ...l }) => l),
-      otherCharges, roundOff: 0, status: 'POSTED', entryMode: mode,
-      attachmentName: fileName ?? undefined, enteredBy: user?.id ?? null,
+    // A bill entered by hand or read off a PDF is still a delivery: it goes
+    // through the same receipt path as an order, just without an order.
+    const grnLines: GRNLine[] = lines.map((l) => ({
+      id: l.id, itemId: l.itemId, orderedQty: l.qty, receivedQty: l.qty, damagedQty: 0,
+      unit: l.unit, rate: l.discount ? round(l.rate - l.discount / (l.qty || 1), 4) : l.rate,
+      taxPct: l.taxPct, batchNo: l.batchNo, expiryDate: l.expiryDate,
+    }))
+    const grn: GoodsReceipt = {
+      id: uid('grn'), grnNo: `GRN-${Date.now().toString(36).toUpperCase()}`, poId: null,
+      supplierId, date: billDate, locationId, lines: grnLines, invoiceNo: billNo,
+      attachmentName: fileName ?? undefined, entryMode: mode, status: 'POSTED',
+      receivedBy: user?.id ?? null, notes: otherCharges ? `Other charges ${money(otherCharges)}` : undefined,
       createdAt: new Date().toISOString(),
     }
-    const result = await actions.postBill(bill)
+    const result = await actions.postGoodsReceipt(grn)
     for (const l of lines) {
       if (l.raw && l.itemId) rememberAlias(l.raw, l.itemId)
     }
@@ -399,20 +408,23 @@ function Register() {
 
   const bills = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return state.bills
-      .filter((b) => b.billDate >= from && b.billDate <= to)
-      .filter((b) => {
+    return state.receipts
+      .filter((g) => g.date >= from && g.date <= to && g.status === 'POSTED')
+      .filter((g) => {
         if (!term) return true
-        const supplier = derived.supplierById.get(b.supplierId)?.name ?? ''
-        return b.billNo.toLowerCase().includes(term) || supplier.toLowerCase().includes(term)
+        const supplier = derived.supplierById.get(g.supplierId)?.name ?? ''
+        return g.grnNo.toLowerCase().includes(term) || (g.invoiceNo ?? '').toLowerCase().includes(term) || supplier.toLowerCase().includes(term)
       })
-      .map((b) => {
-        const net = b.lines.reduce((s, l) => s + l.qty * l.rate - (l.discount || 0), 0)
-        const tax = b.lines.reduce((s, l) => s + (l.qty * l.rate - (l.discount || 0)) * ((l.taxPct || 0) / 100), 0)
-        return { bill: b, net, gross: net + tax + b.otherCharges }
+      .map((g) => {
+        const net = g.lines.reduce((s, l) => s + Math.max(l.receivedQty - l.damagedQty, 0) * l.rate, 0)
+        const tax = g.lines.reduce((s, l) => s + Math.max(l.receivedQty - l.damagedQty, 0) * l.rate * ((l.taxPct || 0) / 100), 0)
+        return {
+          bill: { id: g.id, billNo: g.invoiceNo ?? g.grnNo, supplierId: g.supplierId, billDate: g.date, lines: g.lines, entryMode: g.entryMode, status: g.status, locationId: g.locationId, attachmentName: g.attachmentName },
+          net, gross: net + tax,
+        }
       })
       .sort((a, b) => b.bill.billDate.localeCompare(a.bill.billDate))
-  }, [state.bills, derived.supplierById, from, to, search])
+  }, [state.receipts, derived.supplierById, from, to, search])
 
   const total = bills.reduce((s, b) => s + b.gross, 0)
   const bySupplier = useMemo(() => {
@@ -422,7 +434,7 @@ function Register() {
       .sort((a, b) => b.value - a.value)
   }, [bills, derived.supplierById])
 
-  const detail = open ? state.bills.find((b) => b.id === open) : null
+  const detail = open ? bills.find((b) => b.bill.id === open)?.bill ?? null : null
 
   return (
     <>
@@ -461,7 +473,7 @@ function Register() {
                   <td className="num">{bill.lines.length}</td>
                   <td className="num dim">{money(net)}</td>
                   <td className="num">{money(gross)}</td>
-                  <td><Badge kind={bill.entryMode === 'PDF' ? 'info' : 'neutral'}>{bill.entryMode === 'PDF' ? 'PDF' : 'Manual'}</Badge></td>
+                  <td><Badge kind={bill.entryMode === 'PDF' ? 'info' : bill.entryMode === 'PO' ? 'ok' : 'neutral'}>{bill.entryMode === 'PDF' ? 'PDF' : bill.entryMode === 'PO' ? 'Against order' : 'Manual'}</Badge></td>
                   <td className="right dim">View ›</td>
                 </tr>
               ))}
@@ -482,13 +494,13 @@ function Register() {
             <tbody>
               {detail.lines.map((l) => {
                 const item = derived.itemById.get(l.itemId)
-                const value = l.qty * l.rate - (l.discount || 0)
+                const accepted = Math.max(l.receivedQty - l.damagedQty, 0)
                 return (
                   <tr key={l.id}>
                     <td>{item?.name ?? l.itemId}{l.batchNo && <div className="tbl-sub">batch {l.batchNo}</div>}</td>
-                    <td className="num">{num(l.qty, 2)} {l.unit}</td>
+                    <td className="num">{num(accepted, 2)} {l.unit}</td>
                     <td className="num">{money(l.rate, 2)}</td>
-                    <td className="num">{money(value, 2)}</td>
+                    <td className="num">{money(accepted * l.rate, 2)}</td>
                     <td className="num dim">{pct(l.taxPct, 0)}</td>
                   </tr>
                 )
@@ -520,23 +532,19 @@ function PriceWatch() {
     // Average purchase rate in the first and last third of the window, so a
     // single odd delivery does not look like a price movement.
     const buckets = new Map<ID, { early: number[]; late: number[] }>()
-    const mid = addDays(from, Math.floor((state.bills.length ? 1 : 1) * 0))
     const cut = addDays(to, -Math.floor((days * 2) / 3))
-    for (const bill of state.bills) {
-      if (bill.billDate < from || bill.billDate > to || bill.status !== 'POSTED') continue
-      for (const line of bill.lines) {
+    for (const grn of state.receipts) {
+      if (grn.date < from || grn.date > to || grn.status !== 'POSTED') continue
+      for (const line of grn.lines) {
         const item = derived.itemById.get(line.itemId)
-        if (!item) continue
-        const qtyBase = toBase(item, line.qty, line.unit)
-        if (qtyBase <= 0) continue
-        const perUnit = ((line.qty * line.rate - (line.discount || 0)) / qtyBase) * item.purchaseConversion
+        if (!item || line.receivedQty <= 0) continue
+        const perUnit = (line.rate / (toBase(item, 1, line.unit) || 1)) * item.purchaseConversion
         const b = buckets.get(item.id) ?? { early: [], late: [] }
-        if (bill.billDate <= cut) b.early.push(perUnit)
+        if (grn.date <= cut) b.early.push(perUnit)
         else b.late.push(perUnit)
         buckets.set(item.id, b)
       }
     }
-    void mid
     const out = []
     for (const [itemId, b] of buckets) {
       if (!b.early.length || !b.late.length) continue
@@ -553,7 +561,7 @@ function PriceWatch() {
       out.push({ item, early, late, change, impact, purchases: b.early.length + b.late.length })
     }
     return out.sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact))
-  }, [state.bills, state.movements, derived.itemById, from, to, days])
+  }, [state.receipts, state.movements, derived.itemById, from, to, days])
 
   const focusItem = focus ? derived.itemById.get(focus) : null
   const focusRow = rows.find((r) => r.item.id === focus)
@@ -568,18 +576,14 @@ function PriceWatch() {
 
   const history = useMemo(() => {
     if (!focusItem) return []
-    return state.bills
-      .filter((b) => b.status === 'POSTED' && b.billDate >= from && b.lines.some((l) => l.itemId === focusItem.id))
-      .map((b) => {
-        const l = b.lines.find((x) => x.itemId === focusItem.id)!
-        const qtyBase = toBase(focusItem, l.qty, l.unit)
-        return {
-          date: b.billDate, label: dayLabel(b.billDate),
-          rate: qtyBase ? round(((l.qty * l.rate - (l.discount || 0)) / qtyBase) * focusItem.purchaseConversion, 2) : 0,
-        }
+    return state.receipts
+      .filter((g) => g.status === 'POSTED' && g.date >= from && g.lines.some((l) => l.itemId === focusItem.id && l.receivedQty > 0))
+      .map((g) => {
+        const l = g.lines.find((x) => x.itemId === focusItem.id)!
+        return { date: g.date, label: dayLabel(g.date), rate: round((l.rate / (toBase(focusItem, 1, l.unit) || 1)) * focusItem.purchaseConversion, 2) }
       })
       .sort((a, b) => a.date.localeCompare(b.date))
-  }, [focusItem, state.bills, from])
+  }, [focusItem, state.receipts, from])
 
   const risers = rows.filter((r) => r.change > 2)
   const totalImpact = rows.reduce((s, r) => s + r.impact, 0)
@@ -676,14 +680,12 @@ function Suppliers() {
   const [editing, setEditing] = useState<Supplier | null>(null)
 
   const rows = useMemo(() => state.suppliers.map((s) => {
-    const bills = state.bills.filter((b) => b.supplierId === s.id && b.status === 'POSTED')
-    const spend = bills.reduce((sum, b) => {
-      const net = b.lines.reduce((t, l) => t + l.qty * l.rate - (l.discount || 0), 0)
-      return sum + net + b.lines.reduce((t, l) => t + (l.qty * l.rate - (l.discount || 0)) * ((l.taxPct || 0) / 100), 0)
-    }, 0)
+    const grns = state.receipts.filter((g) => g.supplierId === s.id && g.status === 'POSTED')
+    const spend = grns.reduce((sum, g) => sum + g.lines.reduce((t, l) => t + Math.max(l.receivedQty - l.damagedQty, 0) * l.rate * (1 + (l.taxPct || 0) / 100), 0), 0)
+    const lost = grns.reduce((sum, g) => sum + g.lines.reduce((t, l) => t + (Math.max(l.orderedQty - l.receivedQty, 0) + l.damagedQty) * l.rate, 0), 0)
     const items = state.items.filter((i) => i.defaultSupplierId === s.id).length
-    return { supplier: s, bills: bills.length, spend, items, last: bills.map((b) => b.billDate).sort().pop() ?? null }
-  }).sort((a, b) => b.spend - a.spend), [state.suppliers, state.bills, state.items])
+    return { supplier: s, bills: grns.length, spend, lost, items, last: grns.map((g) => g.date).sort().pop() ?? null }
+  }).sort((a, b) => b.spend - a.spend), [state.suppliers, state.receipts, state.items])
 
   const blank = (): Supplier => ({
     id: uid('sup'), code: `SUP-${String(state.suppliers.length + 1).padStart(3, '0')}`, name: '',
@@ -703,7 +705,7 @@ function Suppliers() {
           <table className="tbl">
             <thead>
               <tr><th>Supplier</th><th>Contact</th><th className="num">Lead time</th><th>Terms</th>
-                <th className="num">Items</th><th className="num">Bills</th><th className="num">Spend</th>
+                <th className="num">Items</th><th className="num">Deliveries</th><th className="num">Spend</th><th className="num">Short / refused</th>
                 <th className="num">Delivery</th><th className="num">Quality</th><th /></tr>
             </thead>
             <tbody>
@@ -719,6 +721,7 @@ function Suppliers() {
                   <td className="num">{r.items}</td>
                   <td className="num">{r.bills}</td>
                   <td className="num">{moneyShort(r.spend)}</td>
+                  <td className={`num ${r.lost ? 'neg' : 'dim'}`}>{r.lost ? moneyShort(r.lost) : '—'}</td>
                   <td className="num"><span className={r.supplier.deliveryScore >= 90 ? 'pos' : 'warn'}>{r.supplier.deliveryScore}</span></td>
                   <td className="num"><span className={r.supplier.qualityScore >= 90 ? 'pos' : 'warn'}>{r.supplier.qualityScore}</span></td>
                   <td className="right dim">Edit ›</td>

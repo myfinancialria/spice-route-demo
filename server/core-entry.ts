@@ -1,8 +1,9 @@
 /** Everything the server needs from the shared domain code, in one entry point. */
 export {
-  postBill, postIssue, postProduction, postSales, postStocktake, postWastage,
-  reverseDocument, uid,
+  postBill, postGoodsReceipt, postIssue, postProduction, postSales, postStocktake,
+  postWastage, reverseDocument, uid,
 } from '../src/data/commands'
+export { computeAlerts, mergeAlerts } from '../src/core/alerts'
 export { buildContext, costDish, costRecipe, theoreticalConsumption } from '../src/core/costing'
 export { balances, newAvgCost } from '../src/core/stock'
 export { computeVariance, summarise } from '../src/core/variance'

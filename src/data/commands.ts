@@ -6,7 +6,8 @@
  * so the same logic runs in the browser and on the server.
  */
 import type {
-  Issue, Item, Movement, ProductionRun, PurchaseBill, SalesDay, Stocktake, Wastage,
+  GoodsReceipt, Issue, Item, Movement, ProductionRun, PurchaseBill, PurchaseOrder,
+  SalesDay, Stocktake, Wastage,
 } from '../core/types'
 import { type CostingContext, costRecipe, theoreticalConsumption } from '../core/costing'
 import { newAvgCost } from '../core/stock'
@@ -24,6 +25,8 @@ export interface PostResult {
   movements: Movement[]
   itemPatches: Item[]
   warnings: string[]
+  /** Documents other than the one posted that changed as a side effect. */
+  poPatch?: PurchaseOrder
 }
 
 let counter = 0
@@ -72,6 +75,74 @@ export function postBill(pc: PostContext, bill: PurchaseBill): PostResult {
     }
   }
   res.itemPatches = [...patched.values()]
+  return res
+}
+
+/**
+ * Goods receipt: the store manager confirms what actually arrived.
+ *
+ * Only the accepted quantity (received − damaged) enters stock. Shortfalls and
+ * refusals never touch the ledger — they become alerts and a mark against the
+ * vendor. The PO it was raised against is advanced to PARTIAL or RECEIVED.
+ */
+export function postGoodsReceipt(
+  pc: PostContext,
+  grn: GoodsReceipt,
+  po?: PurchaseOrder,
+): PostResult {
+  const res = empty()
+  const byId = new Map(pc.items.map((i) => [i.id, i]))
+  const patched = new Map<string, Item>()
+  const ts = pc.now ?? new Date().toISOString()
+
+  for (const line of grn.lines) {
+    const base = patched.get(line.itemId) ?? byId.get(line.itemId)
+    if (!base) { res.warnings.push('Unknown item on a line — skipped'); continue }
+    const accepted = Math.max(line.receivedQty - (line.damagedQty || 0), 0)
+    if (accepted <= 0) continue
+    const qtyBase = toBase(base, accepted, line.unit)
+    const rateBase = qtyBase > 0 ? (accepted * line.rate) / qtyBase : 0
+    const locationId = grn.locationId || base.defaultLocationId
+    const onHand = pc.balance(base.id, locationId)
+    const item: Item = {
+      ...base,
+      avgCost: newAvgCost(onHand, base.avgCost, qtyBase, rateBase),
+      lastPurchaseCost: round(rateBase, 6),
+    }
+    patched.set(item.id, item)
+    res.movements.push({
+      id: uid('mv'), date: grn.date, ts, itemId: item.id, locationId,
+      qty: round(qtyBase, 4), type: 'RECEIPT', rate: round(rateBase, 6),
+      value: round(qtyBase * rateBase, 4), refType: 'GRN', refId: grn.id,
+      staffId: grn.receivedBy, batchNo: line.batchNo,
+    })
+    if (base.lastPurchaseCost > 0) {
+      const jump = (rateBase - base.lastPurchaseCost) / base.lastPurchaseCost
+      if (Math.abs(jump) > 0.35) {
+        res.warnings.push(`${base.name}: rate is ${jump > 0 ? 'up' : 'down'} ${Math.abs(round(jump * 100, 0))}% on the last delivery — check the unit`)
+      }
+    }
+  }
+  res.itemPatches = [...patched.values()]
+
+  if (po) {
+    const lines = po.lines.map((pl) => {
+      const grnLine = grn.lines.find((g) => g.itemId === pl.itemId)
+      if (!grnLine) return pl
+      const item = byId.get(pl.itemId)
+      const accepted = Math.max(grnLine.receivedQty - (grnLine.damagedQty || 0), 0)
+      const acceptedBase = item ? toBase(item, accepted, grnLine.unit) : accepted
+      return { ...pl, acceptedBase: round(pl.acceptedBase + acceptedBase, 4) }
+    })
+    // Received in full when every line has at least 95% of what was ordered;
+    // vendors routinely round a 10 kg order to 9.8.
+    const complete = lines.every((pl) => {
+      const item = byId.get(pl.itemId)
+      const orderedBase = item ? toBase(item, pl.qty, pl.unit) : pl.qty
+      return orderedBase <= 0 || pl.acceptedBase >= orderedBase * 0.95
+    })
+    res.poPatch = { ...po, lines, status: complete ? 'RECEIVED' : 'PARTIAL' }
+  }
   return res
 }
 

@@ -14,8 +14,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import {
-  buildContext, generateSeed, iso, postBill, postIssue, postProduction,
-  postSales, postStocktake, postWastage, reverseDocument,
+  buildContext, generateSeed, iso, postBill, postGoodsReceipt, postIssue,
+  postProduction, postSales, postStocktake, postWastage, reverseDocument,
 } from './lib/core.mjs'
 
 const PORT = Number(process.env.PORT ?? 5190)
@@ -23,8 +23,8 @@ const DB_PATH = process.env.DB_PATH ?? resolve('server/data/ledger.db')
 
 const COLLECTIONS = [
   'categories', 'sections', 'locations', 'staff', 'suppliers', 'items', 'dishes',
-  'recipes', 'bills', 'issues', 'production', 'wastage', 'sales', 'stocktakes',
-  'dayCloses', 'movements',
+  'recipes', 'bills', 'purchaseOrders', 'receipts', 'alerts', 'issues', 'production',
+  'wastage', 'sales', 'stocktakes', 'dayCloses', 'movements',
 ]
 
 mkdirSync(dirname(DB_PATH), { recursive: true })
@@ -113,6 +113,7 @@ function makePostContext() {
 
 const COMMANDS = {
   bill: { fn: postBill, collection: 'bills' },
+  receipt: { fn: postGoodsReceipt, collection: 'receipts' },
   issue: { fn: postIssue, collection: 'issues' },
   production: { fn: postProduction, collection: 'production' },
   wastage: { fn: postWastage, collection: 'wastage' },
@@ -124,10 +125,15 @@ function runCommand(name, document) {
   const command = COMMANDS[name]
   if (!command) throw Object.assign(new Error(`Unknown command "${name}"`), { status: 404 })
   const pc = makePostContext()
-  const result = command.fn(pc, document)
+  // A receipt against an order also advances that order.
+  const po = name === 'receipt' && document.poId
+    ? JSON.parse(db.prepare('SELECT json FROM "purchaseOrders" WHERE id = ?').get(document.poId)?.json ?? 'null')
+    : undefined
+  const result = name === 'receipt' ? command.fn(pc, document, po ?? undefined) : command.fn(pc, document)
   putMany(command.collection, [document])
   putMany('movements', result.movements)
   putMany('items', result.itemPatches)
+  if (result.poPatch) putMany('purchaseOrders', [result.poPatch])
   return result
 }
 

@@ -73,17 +73,12 @@ export function ItemDrawer({ itemId, onClose }: { itemId: ID; onClose: () => voi
       qty: derived.balance(itemId, loc.id),
     })).filter((r) => Math.abs(r.qty) > 0.001)
 
-    // Purchase rate history, from the bills rather than the average.
-    const priceHistory = state.bills
-      .filter((b) => b.status === 'POSTED' && b.lines.some((l) => l.itemId === itemId))
-      .map((b) => {
-        const line = b.lines.find((l) => l.itemId === itemId)!
-        const qtyBase = line.qty * item.purchaseConversion
-        return {
-          date: b.billDate,
-          label: dayLabel(b.billDate),
-          rate: qtyBase ? ((line.qty * line.rate - (line.discount || 0)) / qtyBase) * item.purchaseConversion : 0,
-        }
+    // Purchase rate history, from the receipts rather than the average.
+    const priceHistory = state.receipts
+      .filter((g) => g.status === 'POSTED' && g.lines.some((l) => l.itemId === itemId && l.receivedQty > 0))
+      .map((g) => {
+        const line = g.lines.find((l) => l.itemId === itemId)!
+        return { date: g.date, label: dayLabel(g.date), rate: line.rate }
       })
       .sort((a, b) => a.date.localeCompare(b.date))
 

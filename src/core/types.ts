@@ -147,7 +147,7 @@ export interface Recipe {
   active: boolean
 }
 
-export type StaffRole = 'OWNER' | 'MANAGER' | 'HEAD_CHEF' | 'CHEF' | 'STORE' | 'ACCOUNTS'
+export type StaffRole = 'OWNER' | 'MANAGER' | 'HEAD_CHEF' | 'CHEF' | 'STORE' | 'PURCHASE' | 'ACCOUNTS'
 
 export interface Staff {
   id: ID
@@ -173,6 +173,82 @@ export interface Section {
 /* ------------------------------------------------------------------ */
 
 export type DocStatus = 'DRAFT' | 'POSTED' | 'VOID'
+
+/* ------------------------------------------------------------------ */
+/* Procurement: order → receive                                        */
+/* ------------------------------------------------------------------ */
+
+export type POStatus = 'DRAFT' | 'SENT' | 'PARTIAL' | 'RECEIVED' | 'CANCELLED'
+
+export interface POLine {
+  id: ID
+  itemId: ID
+  /** In the purchase unit the vendor quotes in. */
+  qty: number
+  unit: PurchaseUnit
+  /** Expected rate per purchase unit; the receipt may differ. */
+  rate: number
+  /** Running total of what has been accepted against this line, in base units. */
+  acceptedBase: number
+}
+
+/** What the purchase manager sends to a vendor. Creates no stock on its own. */
+export interface PurchaseOrder {
+  id: ID
+  poNo: string
+  supplierId: ID
+  date: string
+  expectedDate: string
+  lines: POLine[]
+  status: POStatus
+  createdBy: ID | null
+  sentAt?: string
+  notes?: string
+  createdAt: string
+}
+
+export type ReceiptIssue =
+  | 'SHORT_SUPPLIED' | 'DAMAGED_IN_TRANSIT' | 'QUALITY_REJECTED' | 'WRONG_ITEM'
+  | 'EXPIRED' | 'EXCESS_SUPPLIED' | 'OTHER'
+
+export interface GRNLine {
+  id: ID
+  itemId: ID
+  /** From the PO, or equal to received when there is no PO. */
+  orderedQty: number
+  /** What physically arrived, in the purchase unit. */
+  receivedQty: number
+  /** Portion of what arrived that was refused — never enters stock. */
+  damagedQty: number
+  unit: PurchaseUnit
+  rate: number
+  taxPct: number
+  issue?: ReceiptIssue
+  note?: string
+  batchNo?: string
+  expiryDate?: string
+}
+
+/**
+ * Goods receipt: the only thing that puts purchased stock on a shelf.
+ * accepted = received − damaged; missing = ordered − received.
+ */
+export interface GoodsReceipt {
+  id: ID
+  grnNo: string
+  poId: ID | null
+  supplierId: ID
+  date: string
+  locationId: ID
+  lines: GRNLine[]
+  invoiceNo?: string
+  attachmentName?: string
+  entryMode: 'PO' | 'PDF' | 'MANUAL'
+  status: DocStatus
+  receivedBy: ID | null
+  notes?: string
+  createdAt: string
+}
 
 export interface PurchaseBillLine {
   id: ID
@@ -328,6 +404,37 @@ export interface DayClose {
 }
 
 /* ------------------------------------------------------------------ */
+/* Alerts — what the system tells the manager                          */
+/* ------------------------------------------------------------------ */
+
+export type AlertKind =
+  | 'VARIANCE' | 'RECEIPT_ISSUE' | 'PO_OVERDUE' | 'LOW_STOCK' | 'PRICE_JUMP'
+  | 'NEGATIVE_STOCK' | 'COUNT_MISSING' | 'WASTAGE_HIGH'
+
+export type AlertStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED'
+
+export interface Alert {
+  id: ID
+  /** Stable key so re-running the engine updates rather than duplicates. */
+  key: string
+  date: string
+  kind: AlertKind
+  severity: Exclude<Severity, 'OK'>
+  title: string
+  detail: string
+  /** Rupee impact — what this is costing or putting at risk. */
+  impact: number
+  itemId?: ID
+  refType?: string
+  refId?: ID
+  status: AlertStatus
+  createdAt: string
+  actedBy?: ID | null
+  actedAt?: string
+  note?: string
+}
+
+/* ------------------------------------------------------------------ */
 /* Ledger                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -356,7 +463,7 @@ export interface Movement {
   /** Cost per base unit at the time of the movement. */
   rate: number
   value: number
-  refType: 'BILL' | 'ISSUE' | 'SALES' | 'PRODUCTION' | 'WASTAGE' | 'STOCKTAKE' | 'OPENING'
+  refType: 'BILL' | 'GRN' | 'ISSUE' | 'SALES' | 'PRODUCTION' | 'WASTAGE' | 'STOCKTAKE' | 'OPENING'
   refId: ID
   staffId: ID | null
   batchNo?: string

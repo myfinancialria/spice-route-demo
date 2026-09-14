@@ -11,7 +11,7 @@ import { addDays, dayLabel, longDate } from '../core/dates'
 import { costRecipe } from '../core/costing'
 import { round } from '../core/units'
 import { money, moneyShort, num, pct, qty as fmtQty } from '../lib/format'
-import type { ID, Issue, PurchaseBill } from '../core/types'
+import type { GoodsReceipt, ID, Issue } from '../core/types'
 
 export default function Store() {
   return (
@@ -105,7 +105,7 @@ function Receipts() {
             <tbody>
               {receipts.slice(0, 300).map((m) => {
                 const item = derived.itemById.get(m.itemId)
-                const bill = state.bills.find((b) => b.id === m.refId)
+                const grn = m.refType === 'GRN' ? state.receipts.find((g) => g.id === m.refId) : undefined
                 return (
                   <tr key={m.id} className="clickable" onClick={() => setDrill(m.itemId)}>
                     <td className="nowrap dim">{dayLabel(m.date)}</td>
@@ -114,7 +114,7 @@ function Receipts() {
                     <td className="num pos">+{item ? fmtQty(m.qty, item.baseUnit) : m.qty}</td>
                     <td className="num dim">{item ? money(m.rate * item.purchaseConversion, 2) : money(m.rate, 4)}</td>
                     <td className="num">{money(m.value)}</td>
-                    <td className="dim">{bill ? `${derived.supplierById.get(bill.supplierId)?.name} · ${bill.billNo}` : m.note ?? '—'}</td>
+                    <td className="dim">{grn ? `${derived.supplierById.get(grn.supplierId)?.name} · ${grn.grnNo}` : m.note ?? '—'}</td>
                   </tr>
                 )
               })}
@@ -164,24 +164,19 @@ function OpeningEntry({ onClose, onDone }: { onClose: () => void; onDone: (count
   const post = async () => {
     const usable = lines.filter((l) => l.qty > 0)
     if (!usable.length) return
-    // Modelled as a zero-supplier bill so it goes through the same costing path
-    // and shows up in the audit trail like any other receipt.
-    const bill: PurchaseBill = {
-      id: uid('bill'), billNo: `OPEN-${Date.now().toString(36).toUpperCase()}`,
-      supplierId: state.suppliers[0]?.id ?? '', billDate: date,
-      receivedAt: new Date().toISOString(), locationId,
+    // Goes through the same receipt path as an order, so it costs and audits
+    // exactly like any other delivery.
+    const grn: GoodsReceipt = {
+      id: uid('grn'), grnNo: `GRN-${Date.now().toString(36).toUpperCase()}`, poId: null,
+      supplierId: state.suppliers[0]?.id ?? '', date, locationId,
       lines: usable.map((l) => {
         const item = derived.itemById.get(l.itemId)!
-        return {
-          id: uid('bl'), itemId: l.itemId, qty: l.qty, unit: item.purchaseUnit,
-          rate: l.rate, discount: 0, taxPct: 0,
-        }
+        return { id: uid('grl'), itemId: l.itemId, orderedQty: l.qty, receivedQty: l.qty, damagedQty: 0, unit: item.purchaseUnit, rate: l.rate, taxPct: 0 }
       }),
-      otherCharges: 0, roundOff: 0, status: 'POSTED', entryMode: 'MANUAL',
-      enteredBy: user?.id ?? null, notes: 'Received without a bill',
-      createdAt: new Date().toISOString(),
+      entryMode: 'MANUAL', status: 'POSTED', receivedBy: user?.id ?? null,
+      notes: 'Received without a bill', createdAt: new Date().toISOString(),
     }
-    await actions.postBill(bill)
+    await actions.postGoodsReceipt(grn)
     onDone(usable.length, value)
   }
 

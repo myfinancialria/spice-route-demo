@@ -84,6 +84,7 @@ const STAFF = [
   { id: 'stf_c5', code: 'CHF-05', name: 'Mahesh Yadav', role: 'CHEF', sectionId: 'sec_bread', monthlyCost: 32000, shiftHours: 9, pin: '3737' },
   { id: 'stf_c6', code: 'CHF-06', name: 'Priya Nair', role: 'CHEF', sectionId: 'sec_pastry', monthlyCost: 36000, shiftHours: 8, pin: '3838' },
   { id: 'stf_store', code: 'STR-01', name: 'Ganesh Rao', role: 'STORE', sectionId: null, monthlyCost: 28000, shiftHours: 9, pin: '4444' },
+  { id: 'stf_buy', code: 'PUR-01', name: 'Ravi Shankar', role: 'PURCHASE', sectionId: null, monthlyCost: 38000, shiftHours: 9, pin: '6666' },
   { id: 'stf_acc', code: 'ACC-01', name: 'Fathima Zohra', role: 'ACCOUNTS', sectionId: null, monthlyCost: 34000, shiftHours: 8, pin: '5555' },
 ].map((s) => ({ ...s, active: true }))
 

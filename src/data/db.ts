@@ -8,12 +8,15 @@
  */
 import { type IDBPDatabase, openDB } from 'idb'
 import type {
-  Category, DayClose, Dish, Issue, Item, Movement, ProductionRun, PurchaseBill,
-  Recipe, SalesDay, Section, Staff, StockLocation, Stocktake, Supplier, Wastage,
+  Alert, Category, DayClose, Dish, GoodsReceipt, Issue, Item, Movement,
+  ProductionRun, PurchaseBill, PurchaseOrder, Recipe, SalesDay, Section, Staff,
+  StockLocation, Stocktake, Supplier, Wastage,
 } from '../core/types'
 
 export const DB_NAME = 'kitchen-ledger'
-export const DB_VERSION = 1
+export const DB_VERSION = 2
+/** Bump when the seed's shape changes so an old local copy is regenerated. */
+export const SCHEMA_VERSION = 2
 
 export interface Collections {
   categories: Category[]
@@ -25,6 +28,9 @@ export interface Collections {
   dishes: Dish[]
   recipes: Recipe[]
   bills: PurchaseBill[]
+  purchaseOrders: PurchaseOrder[]
+  receipts: GoodsReceipt[]
+  alerts: Alert[]
   issues: Issue[]
   production: ProductionRun[]
   wastage: Wastage[]
@@ -36,8 +42,8 @@ export interface Collections {
 
 export const COLLECTIONS = [
   'categories', 'sections', 'locations', 'staff', 'suppliers', 'items', 'dishes',
-  'recipes', 'bills', 'issues', 'production', 'wastage', 'sales', 'stocktakes',
-  'dayCloses', 'movements',
+  'recipes', 'bills', 'purchaseOrders', 'receipts', 'alerts', 'issues', 'production',
+  'wastage', 'sales', 'stocktakes', 'dayCloses', 'movements',
 ] as const
 
 export type CollectionName = (typeof COLLECTIONS)[number]
@@ -69,6 +75,10 @@ export async function loadAll(): Promise<Collections | null> {
   const db = await getDb()
   const seeded = await db.get('meta' as never, 'seededAt')
   if (!seeded) return null
+  // A copy seeded by an older build lacks the newer collections; regenerate
+  // rather than hand the app half a model.
+  const schema = (await db.get('meta' as never, 'schemaVersion')) as number | undefined
+  if ((schema ?? 1) < SCHEMA_VERSION) return null
   const out = {} as Collections
   for (const name of COLLECTIONS) {
     ;(out as any)[name] = await db.getAll(name as never)
@@ -92,6 +102,7 @@ export async function writeAll(data: Collections, meta: Record<string, unknown> 
   const tx = db.transaction('meta' as never, 'readwrite')
   const metaStore = tx.objectStore('meta' as never) as any
   metaStore.put(new Date().toISOString(), 'seededAt')
+  metaStore.put(SCHEMA_VERSION, 'schemaVersion')
   for (const [k, v] of Object.entries(meta)) metaStore.put(v, k)
   await tx.done
 }
@@ -129,7 +140,8 @@ export async function getMeta<T>(key: string): Promise<T | undefined> {
 export function emptyCollections(): Collections {
   return {
     categories: [], sections: [], locations: [], staff: [], suppliers: [], items: [],
-    dishes: [], recipes: [], bills: [], issues: [], production: [], wastage: [],
-    sales: [], stocktakes: [], dayCloses: [], movements: [],
+    dishes: [], recipes: [], bills: [], purchaseOrders: [], receipts: [], alerts: [],
+    issues: [], production: [], wastage: [], sales: [], stocktakes: [], dayCloses: [],
+    movements: [],
   }
 }
